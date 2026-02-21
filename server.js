@@ -203,6 +203,91 @@ app.post('/api/eg4/set-battery-settings', async (req, res) => {
   }
 });
 
+// GET /api/eg4/realtime - Get real-time inverter runtime data (power, SOC, voltages, etc.)
+app.get('/api/eg4/realtime', async (req, res) => {
+  if (!isSessionValid() || !currentSerialNum) {
+    return res.json({ success: false, error: 'Not connected to EG4' });
+  }
+  try {
+    // Fetch both runtime and energy data in parallel
+    const [runtimeRes, energyRes] = await Promise.all([
+      fetch(`${EG4_BASE_URL}/api/inverter/getInverterRuntime`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': sessionCookie },
+        body: `serialNum=${currentSerialNum}`
+      }),
+      fetch(`${EG4_BASE_URL}/api/inverter/getInverterEnergyInfo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': sessionCookie },
+        body: `serialNum=${currentSerialNum}`
+      })
+    ]);
+    const runtime = await runtimeRes.json();
+    const energy = await energyRes.json();
+
+    // Compute consumption: solar + grid_import + battery_discharge - grid_export - battery_charge
+    // ppv = total PV watts, pToUser = grid import, pToGrid = grid export, pCharge = battery charge, pDisCharge = battery discharge
+    const pvPower = (runtime.ppv || 0) / 10; // EG4 returns in 0.1W units? Check...
+    // Actually EG4 returns raw watts for ppv, pCharge, pDisCharge, pToGrid, pToUser
+    const solarW = runtime.ppv || 0;
+    const battChargeW = runtime.pCharge || 0;
+    const battDischargeW = runtime.pDisCharge || 0;
+    const gridImportW = runtime.pToUser || 0;
+    const gridExportW = runtime.pToGrid || 0;
+    const consumptionW = solarW + gridImportW + battDischargeW - gridExportW - battChargeW;
+
+    res.json({
+      success: true,
+      // Real-time power (watts)
+      solarPower: solarW,
+      batteryPower: runtime.batPower || 0,
+      batteryCharging: battChargeW,
+      batteryDischarging: battDischargeW,
+      gridImport: gridImportW,
+      gridExport: gridExportW,
+      consumptionPower: Math.max(0, consumptionW),
+      inverterPower: runtime.pinv || 0,
+      epsPower: runtime.peps || 0,
+      // PV string details
+      pv1Power: runtime.ppv1 || 0,
+      pv2Power: runtime.ppv2 || 0,
+      pv3Power: runtime.ppv3 || 0,
+      pv1Voltage: (runtime.vpv1 || 0) / 10,
+      pv2Voltage: (runtime.vpv2 || 0) / 10,
+      pv3Voltage: (runtime.vpv3 || 0) / 10,
+      // Battery
+      soc: runtime.soc || 0,
+      batteryVoltage: (runtime.vBat || 0) / 10,
+      batteryTemp: runtime.tBat || 0,
+      // Grid
+      gridVoltage: (runtime.vacr || 0) / 10,
+      gridFrequency: (runtime.fac || 0) / 100,
+      // Status
+      statusText: runtime.statusText || 'unknown',
+      deviceTime: runtime.deviceTime || null,
+      lost: runtime.lost || false,
+      hasRuntimeData: runtime.hasRuntimeData || false,
+      // Working mode from runtime
+      workModeText: runtime.workModeText || null,
+      // Energy totals (today)
+      todaySolarYield: energy.todayYieldingText || '0',
+      todayBatteryDischarge: energy.todayDischargingText || '0',
+      todayBatteryCharge: energy.todayChargingText || '0',
+      todayGridImport: energy.todayImportText || '0',
+      todayGridExport: energy.todayExportText || '0',
+      todayConsumption: energy.todayUsageText || '0',
+      // BMS info
+      bmsCharge: runtime.bmsCharge,
+      bmsDischarge: runtime.bmsDischarge,
+      bmsForceCharge: runtime.bmsForceCharge,
+      maxChargeCurrent: (runtime.maxChgCurrValue || 0),
+      maxDischargeCurrent: (runtime.maxDischgCurrValue || 0),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({ status: 'EG4 Proxy Server running', connected: isSessionValid(), serialNum: currentSerialNum });
 });
