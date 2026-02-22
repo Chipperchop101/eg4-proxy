@@ -116,6 +116,166 @@ app.get('/api/eg4/status', (req, res) => {
   });
 });
 
+// GET /api/eg4/working-modes - Read inverter register data and return working mode schedule
+app.get('/api/eg4/working-modes', async (req, res) => {
+  if (!isSessionValid()) return res.status(401).json({ error: 'Not authenticated' });
+  if (!currentSerialNum) return res.status(400).json({ error: 'No station selected' });
+
+  try {
+    // Read registers in 3 batches (same as EG4 Monitor Center "Read" button)
+    const batches = [
+      { startRegister: 0, pointNumber: 127 },
+      { startRegister: 127, pointNumber: 127 },
+    ];
+
+    const allFields = {};
+    for (const batch of batches) {
+      const resp = await fetch(`${EG4_BASE_URL}/web/maintain/remoteRead/read`, {
+        method: 'POST',
+        headers: { 'Cookie': sessionCookie, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `inverterSn=${currentSerialNum}&startRegister=${batch.startRegister}&pointNumber=${batch.pointNumber}`
+      });
+      const data = await resp.json();
+      if (!data.success) return res.status(500).json({ error: 'Failed to read registers', batch });
+      Object.assign(allFields, data);
+    }
+
+    // Parse AC Charge times (3 time slots)
+    const acCharge = [];
+    const acPrefixes = [
+      { sh: 'HOLD_AC_CHARGE_START_HOUR', sm: 'HOLD_AC_CHARGE_START_MINUTE', eh: 'HOLD_AC_CHARGE_END_HOUR', em: 'HOLD_AC_CHARGE_END_MINUTE' },
+      { sh: 'HOLD_AC_CHARGE_START_HOUR_1', sm: 'HOLD_AC_CHARGE_START_MINUTE_1', eh: 'HOLD_AC_CHARGE_END_HOUR_1', em: 'HOLD_AC_CHARGE_END_MINUTE_1' },
+      { sh: 'HOLD_AC_CHARGE_START_HOUR_2', sm: 'HOLD_AC_CHARGE_START_MINUTE_2', eh: 'HOLD_AC_CHARGE_END_HOUR_2', em: 'HOLD_AC_CHARGE_END_MINUTE_2' },
+    ];
+    for (const p of acPrefixes) {
+      const startH = parseInt(allFields[p.sh] || '0');
+      const startM = parseInt(allFields[p.sm] || '0');
+      const endH = parseInt(allFields[p.eh] || '0');
+      const endM = parseInt(allFields[p.em] || '0');
+      if (startH !== endH || startM !== endM) {
+        acCharge.push({
+          start: `${String(startH).padStart(2,'0')}:${String(startM).padStart(2,'0')}`,
+          end: `${String(endH).padStart(2,'0')}:${String(endM).padStart(2,'0')}`
+        });
+      }
+    }
+
+    // Parse Peak Shaving times (2 time slots)
+    const peakShaving = [];
+    const peakEnabled = allFields['FUNC_GRID_PEAK_SHAVING'] === true || allFields['FUNC_GRID_PEAK_SHAVING'] === 'true';
+    const psSlots = [
+      { sh: 'LSP_HOLD_DIS_CHG_POWER_TIME_37', sm: 'LSP_HOLD_DIS_CHG_POWER_TIME_38', eh: 'LSP_HOLD_DIS_CHG_POWER_TIME_39', em: 'LSP_HOLD_DIS_CHG_POWER_TIME_40' },
+      { sh: 'LSP_HOLD_DIS_CHG_POWER_TIME_41', sm: 'LSP_HOLD_DIS_CHG_POWER_TIME_42', eh: 'LSP_HOLD_DIS_CHG_POWER_TIME_43', em: 'LSP_HOLD_DIS_CHG_POWER_TIME_44' },
+    ];
+    for (const p of psSlots) {
+      const startH = parseInt(allFields[p.sh] || '0');
+      const startM = parseInt(allFields[p.sm] || '0');
+      const endH = parseInt(allFields[p.eh] || '0');
+      const endM = parseInt(allFields[p.em] || '0');
+      if (startH !== endH || startM !== endM) {
+        peakShaving.push({
+          start: `${String(startH).padStart(2,'0')}:${String(startM).padStart(2,'0')}`,
+          end: `${String(endH).padStart(2,'0')}:${String(endM).padStart(2,'0')}`
+        });
+      }
+    }
+
+    // Parse Forced Charge times
+    const forcedCharge = [];
+    const fcPrefixes = [
+      { sh: 'HOLD_FORCED_CHARGE_START_HOUR', sm: 'HOLD_FORCED_CHARGE_START_MINUTE', eh: 'HOLD_FORCED_CHARGE_END_HOUR', em: 'HOLD_FORCED_CHARGE_END_MINUTE' },
+      { sh: 'HOLD_FORCED_CHARGE_START_HOUR_1', sm: 'HOLD_FORCED_CHARGE_START_MINUTE_1', eh: 'HOLD_FORCED_CHARGE_END_HOUR_1', em: 'HOLD_FORCED_CHARGE_END_MINUTE_1' },
+    ];
+    for (const p of fcPrefixes) {
+      const startH = parseInt(allFields[p.sh] || '0');
+      const startM = parseInt(allFields[p.sm] || '0');
+      const endH = parseInt(allFields[p.eh] || '0');
+      const endM = parseInt(allFields[p.em] || '0');
+      if (startH !== endH || startM !== endM) {
+        forcedCharge.push({
+          start: `${String(startH).padStart(2,'0')}:${String(startM).padStart(2,'0')}`,
+          end: `${String(endH).padStart(2,'0')}:${String(endM).padStart(2,'0')}`
+        });
+      }
+    }
+
+    // Parse Forced Discharge times
+    const forcedDischarge = [];
+    const fdPrefixes = [
+      { sh: 'HOLD_FORCED_DISCHARGE_START_HOUR', sm: 'HOLD_FORCED_DISCHARGE_START_MINUTE', eh: 'HOLD_FORCED_DISCHARGE_END_HOUR', em: 'HOLD_FORCED_DISCHARGE_END_MINUTE' },
+      { sh: 'HOLD_FORCED_DISCHARGE_START_HOUR_1', sm: 'HOLD_FORCED_DISCHARGE_START_MINUTE_1', eh: 'HOLD_FORCED_DISCHARGE_END_HOUR_1', em: 'HOLD_FORCED_DISCHARGE_END_MINUTE_1' },
+    ];
+    for (const p of fdPrefixes) {
+      const startH = parseInt(allFields[p.sh] || '0');
+      const startM = parseInt(allFields[p.sm] || '0');
+      const endH = parseInt(allFields[p.eh] || '0');
+      const endM = parseInt(allFields[p.em] || '0');
+      if (startH !== endH || startM !== endM) {
+        forcedDischarge.push({
+          start: `${String(startH).padStart(2,'0')}:${String(startM).padStart(2,'0')}`,
+          end: `${String(endH).padStart(2,'0')}:${String(endM).padStart(2,'0')}`
+        });
+      }
+    }
+
+    // Battery settings
+    const batterySettings = {
+      acChargeStartSOC: parseInt(allFields['HOLD_AC_CHARGE_START_BATTERY_SOC'] || '0'),
+      acChargeEndSOC: parseInt(allFields['HOLD_AC_CHARGE_END_BATTERY_SOC'] || '0'),
+      acChargeStartVolt: parseFloat(allFields['HOLD_AC_CHARGE_START_BATTERY_VOLTAGE'] || '0'),
+      acChargeEndVolt: parseFloat(allFields['HOLD_AC_CHARGE_END_BATTERY_VOLTAGE'] || '0'),
+      peakShavingSOC1: parseInt(allFields['_12K_HOLD_GRID_PEAK_SHAVING_SOC'] || '0'),
+      peakShavingSOC2: parseInt(allFields['_12K_HOLD_GRID_PEAK_SHAVING_SOC_2'] || '0'),
+      peakShavingPower1: parseInt(allFields['_12K_HOLD_GRID_PEAK_SHAVING_POWER'] || '0'),
+      peakShavingPower2: parseInt(allFields['_12K_HOLD_GRID_PEAK_SHAVING_POWER_2'] || '0'),
+    };
+
+    // Build the full schedule — fill gaps with Self Consumption
+    // Collect all active time ranges
+    const modes = [];
+    for (const slot of acCharge) modes.push({ mode: 'AC Charge', ...slot });
+    for (const slot of peakShaving) modes.push({ mode: 'Peak Shaving', ...slot });
+    for (const slot of forcedCharge) modes.push({ mode: 'Forced Charge', ...slot });
+    for (const slot of forcedDischarge) modes.push({ mode: 'Forced Discharge', ...slot });
+
+    // Sort by start time
+    modes.sort((a, b) => a.start.localeCompare(b.start));
+
+    // Fill gaps with Self Consumption
+    const schedule = [];
+    let cursor = '00:00';
+    for (const m of modes) {
+      if (m.start > cursor) {
+        schedule.push({ mode: 'Self Consumption', start: cursor, end: m.start });
+      }
+      schedule.push(m);
+      cursor = m.end;
+    }
+    if (cursor < '24:00' && cursor !== '00:00') {
+      schedule.push({ mode: 'Self Consumption', start: cursor, end: '24:00' });
+    }
+    if (modes.length === 0) {
+      schedule.push({ mode: 'Self Consumption', start: '00:00', end: '24:00' });
+    }
+
+    res.json({
+      success: true,
+      schedule,
+      acCharge,
+      peakShaving,
+      peakShavingEnabled: peakEnabled,
+      forcedCharge,
+      forcedDischarge,
+      batterySettings,
+      firmware: allFields['HOLD_FW_CODE'] || null,
+      deviceTime: allFields['HOLD_TIME'] || null,
+    });
+  } catch (err) {
+    console.error('Working modes error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/eg4/read-settings
 app.get('/api/eg4/read-settings', async (req, res) => {
   if (!isSessionValid()) return res.status(401).json({ error: 'Not authenticated' });
