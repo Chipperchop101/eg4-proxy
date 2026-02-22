@@ -230,13 +230,18 @@ app.get('/api/eg4/working-modes', async (req, res) => {
       peakShavingPower2: parseInt(allFields['_12K_HOLD_GRID_PEAK_SHAVING_POWER_2'] || '0'),
     };
 
+    // Check enable flags
+    const forcedChargeEnabled = allFields['FUNC_FORCED_CHG_EN'] === true || allFields['FUNC_FORCED_CHG_EN'] === 'true';
+    const forcedDischargeEnabled = allFields['FUNC_FORCED_DISCHG_EN'] === true || allFields['FUNC_FORCED_DISCHG_EN'] === 'true';
+    const backupEnabled = allFields['FUNC_BATTERY_BACKUP_CTRL'] === true || allFields['FUNC_BATTERY_BACKUP_CTRL'] === 'true';
+
     // Build the full schedule — fill gaps with Self Consumption
-    // Collect all active time ranges
+    // Only include modes that are enabled
     const modes = [];
     for (const slot of acCharge) modes.push({ mode: 'AC Charge', ...slot });
-    for (const slot of peakShaving) modes.push({ mode: 'Peak Shaving', ...slot });
-    for (const slot of forcedCharge) modes.push({ mode: 'Forced Charge', ...slot });
-    for (const slot of forcedDischarge) modes.push({ mode: 'Forced Discharge', ...slot });
+    if (peakEnabled) for (const slot of peakShaving) modes.push({ mode: 'Peak Shaving', ...slot });
+    if (forcedChargeEnabled) for (const slot of forcedCharge) modes.push({ mode: 'Forced Charge', ...slot });
+    if (forcedDischargeEnabled) for (const slot of forcedDischarge) modes.push({ mode: 'Forced Discharge', ...slot });
 
     // Sort by start time
     modes.sort((a, b) => a.start.localeCompare(b.start));
