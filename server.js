@@ -441,6 +441,13 @@ app.get('/api/eg4/realtime', async (req, res) => {
       todayGridImport: energy.todayImportText || '0',
       todayGridExport: energy.todayExportText || '0',
       todayConsumption: energy.todayUsageText || '0',
+      // Energy totals (lifetime)
+      totalSolarYield: energy.totalYieldingText || '0',
+      totalBatteryDischarge: energy.totalDischargingText || '0',
+      totalBatteryCharge: energy.totalChargingText || '0',
+      totalGridImport: energy.totalImportText || '0',
+      totalGridExport: energy.totalExportText || '0',
+      totalConsumption: energy.totalUsageText || '0',
       // BMS info
       bmsCharge: runtime.bmsCharge,
       bmsDischarge: runtime.bmsDischarge,
