@@ -453,6 +453,61 @@ app.get('/api/eg4/realtime', async (req, res) => {
   }
 });
 
+// GET /api/eg4/plant-list - Return cached stations from last login
+app.get('/api/eg4/plant-list', async (req, res) => {
+  if (!isSessionValid()) return res.status(401).json({ error: 'Not authenticated' });
+  try {
+    const plantsRes = await fetch(`${EG4_BASE_URL}/web/config/plant/list/viewer`, {
+      method: 'POST',
+      headers: { 'Cookie': sessionCookie, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'page=1&rows=100'
+    });
+    const plantsData = await plantsRes.json();
+    const stations = [];
+    for (const plant of (plantsData.rows || [])) {
+      const invRes = await fetch(`${EG4_BASE_URL}/web/config/inverter/list`, {
+        method: 'POST',
+        headers: { 'Cookie': sessionCookie, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `page=1&rows=50&plantId=${plant.id}`
+      });
+      const invData = await invRes.json();
+      for (const inv of (invData.rows || [])) {
+        stations.push({
+          name: `${plant.name} — ${inv.deviceTypeText} (${inv.serialNum})`,
+          plantName: plant.name,
+          plantId: plant.id,
+          serialNum: inv.serialNum,
+          deviceType: inv.deviceTypeText,
+          status: inv.statusText,
+          address: plant.address || ''
+        });
+      }
+    }
+    res.json({ success: true, stations });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/eg4/getPlantDetailChart - Get plant energy stats (daily/total)
+app.get('/api/eg4/getPlantDetailChart', async (req, res) => {
+  if (!isSessionValid()) return res.status(401).json({ error: 'Not authenticated' });
+  const { plantId, date } = req.query;
+  if (!plantId) return res.status(400).json({ error: 'plantId required' });
+  const d = date || new Date().toISOString().split('T')[0];
+  try {
+    const resp = await fetch(`${EG4_BASE_URL}/api/plant/getPlantDetailChart`, {
+      method: 'POST',
+      headers: { 'Cookie': sessionCookie, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `plantId=${plantId}&date=${d}&type=1`
+    });
+    const data = await resp.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({ status: 'EG4 Proxy Server running', connected: isSessionValid(), serialNum: currentSerialNum });
 });
