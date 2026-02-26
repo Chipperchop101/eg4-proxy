@@ -460,6 +460,33 @@ app.get('/api/eg4/realtime', async (req, res) => {
   }
 });
 
+// POST /api/eg4/forecast - Get solar energy forecast for today and tomorrow
+app.post('/api/eg4/forecast', async (req, res) => {
+  if (!isSessionValid() || !currentSerialNum) {
+    return res.json({ success: false, error: 'Not connected to EG4' });
+  }
+  try {
+    const resp = await fetch(`${EG4_BASE_URL}/api/predict/solar/dayPredictColumn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': sessionCookie },
+      body: `serialNum=${currentSerialNum}`
+    });
+    const data = await resp.json();
+    if (!data.success || !data.solarEnergys) {
+      return res.json({ success: false, error: 'Failed to fetch forecast data' });
+    }
+    const todaySum = data.solarEnergys.reduce((sum, h) => sum + (h.todaySolarEnergy || 0), 0);
+    const tomorrowSum = data.solarEnergys.reduce((sum, h) => sum + (h.tomorrowSolarEnergy || 0), 0);
+    res.json({
+      success: true,
+      todayForecast: Math.round(todaySum / 10 * 10) / 10,
+      tomorrowForecast: Math.round(tomorrowSum / 10 * 10) / 10
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // GET /api/eg4/plant-list - Return cached stations from last login
 app.get('/api/eg4/plant-list', async (req, res) => {
   if (!isSessionValid()) return res.status(401).json({ error: 'Not authenticated' });
