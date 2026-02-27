@@ -390,10 +390,19 @@ app.get('/api/eg4/realtime', async (req, res) => {
     const runtime = await runtimeRes.json();
     const energy = await energyRes.json();
 
+    // DEBUG: Log raw EG4 runtime fields to verify field mapping
+    console.log('[EG4 DEBUG] Raw runtime power fields:', JSON.stringify({
+      ppv: runtime.ppv, ppv1: runtime.ppv1, ppv2: runtime.ppv2, ppv3: runtime.ppv3,
+      pCharge: runtime.pCharge, pDisCharge: runtime.pDisCharge,
+      pToUser: runtime.pToUser, pToGrid: runtime.pToGrid,
+      pLocalLoad: runtime.pLocalLoad, pLoad: runtime.pLoad, pacLoad: runtime.pacLoad,
+      pinv: runtime.pinv, peps: runtime.peps, batPower: runtime.batPower,
+      soc: runtime.soc, vBat: runtime.vBat,
+      consumptionPower: runtime.consumptionPower, loadPower: runtime.loadPower,
+    }));
+
     // Compute consumption: solar + grid_import + battery_discharge - grid_export - battery_charge
     // ppv = total PV watts, pToUser = grid import, pToGrid = grid export, pCharge = battery charge, pDisCharge = battery discharge
-    const pvPower = (runtime.ppv || 0) / 10; // EG4 returns in 0.1W units? Check...
-    // Actually EG4 returns raw watts for ppv, pCharge, pDisCharge, pToGrid, pToUser
     const solarW = runtime.ppv || 0;
     const battChargeW = runtime.pCharge || 0;
     const battDischargeW = runtime.pDisCharge || 0;
