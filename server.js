@@ -551,6 +551,26 @@ app.get('/api/eg4/getPlantDetailChart', async (req, res) => {
   }
 });
 
+// GET /api/eg4/day-chart - Get full day chart data (historical power/SOC curves)
+app.get('/api/eg4/day-chart', async (req, res) => {
+  if (!isSessionValid() || !currentSerialNum) {
+    return res.json({ success: false, error: 'Not connected to EG4' });
+  }
+  try {
+    const dateText = req.query.date || new Date().toISOString().split('T')[0];
+    const resp = await fetch(`${EG4_BASE_URL}/api/analyze/chart/dayMultiLine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Cookie': sessionCookie },
+      body: `serialNum=${currentSerialNum}&dateText=${dateText}`
+    });
+    const data = await resp.json();
+    res.json(data);
+  } catch (err) {
+    console.error('Day chart error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get('/', (req, res) => {
   res.json({ status: 'EG4 Proxy Server running', connected: isSessionValid(), serialNum: currentSerialNum });
 });
