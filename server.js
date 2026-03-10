@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
+import WebSocket from 'ws';
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -571,10 +572,153 @@ app.get('/api/eg4/day-chart', async (req, res) => {
   }
 });
 
+// ===== SENSE ENERGY MONITOR =====
+const SENSE_API = 'https://api.sense.com/apiservice/api/v1';
+const SENSE_WS_URL = 'wss://clientrt.sense.com/monitors';
+let senseToken = null;
+let senseTokenTime = null;
+let senseMonitorId = null;
+const SENSE_TOKEN_TIMEOUT = 12 * 60 * 60 * 1000;
+
+let senseRealtime = null;
+let senseRealtimeTime = null;
+let senseWs = null;
+let senseWsReconnectTimer = null;
+
+async function ensureSenseAuth() {
+  if (senseToken && senseTokenTime && (Date.now() - senseTokenTime < SENSE_TOKEN_TIMEOUT)) return true;
+  const email = process.env.SENSE_EMAIL;
+  const password = process.env.SENSE_PASSWORD;
+  if (!email || !password) throw new Error('SENSE_EMAIL and SENSE_PASSWORD env vars required');
+  const resp = await fetch(`${SENSE_API}/authenticate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password }).toString()
+  });
+  if (!resp.ok) throw new Error(`Sense auth failed (${resp.status})`);
+  const data = await resp.json();
+  senseToken = data.access_token;
+  senseMonitorId = data.monitors?.[0]?.id || 208080;
+  senseTokenTime = Date.now();
+  console.log(`Sense authenticated, monitor=${senseMonitorId}`);
+  return true;
+}
+
+function connectSenseWebSocket() {
+  if (senseWs) { try { senseWs.close(); } catch(e) {} }
+  if (!senseToken || !senseMonitorId) return;
+  const wsUrl = `${SENSE_WS_URL}/${senseMonitorId}/realtimefeed?access_token=${senseToken}`;
+  senseWs = new WebSocket(wsUrl);
+  senseWs.on('open', () => console.log('Sense WebSocket connected'));
+  senseWs.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'realtime_update' && msg.payload) {
+        senseRealtime = msg.payload;
+        senseRealtimeTime = Date.now();
+      }
+    } catch (e) {}
+  });
+  senseWs.on('close', () => {
+    console.log('Sense WebSocket closed, reconnecting in 30s...');
+    senseWs = null;
+    clearTimeout(senseWsReconnectTimer);
+    senseWsReconnectTimer = setTimeout(() => {
+      ensureSenseAuth().then(() => connectSenseWebSocket()).catch(e => console.error('Sense reconnect failed:', e));
+    }, 30000);
+  });
+  senseWs.on('error', (err) => console.error('Sense WS error:', err.message));
+}
+
+if (process.env.SENSE_EMAIL && process.env.SENSE_PASSWORD) {
+  ensureSenseAuth().then(() => connectSenseWebSocket()).catch(e => console.error('Sense init failed:', e));
+}
+
+async function senseFetch(path) {
+  await ensureSenseAuth();
+  const url = path.startsWith('/history/trends')
+    ? `${SENSE_API}/app${path}`
+    : `${SENSE_API}/app/monitors/${senseMonitorId}${path}`;
+  const resp = await fetch(url, { headers: { 'Authorization': `bearer ${senseToken}` } });
+  if (resp.status === 401) {
+    senseToken = null;
+    await ensureSenseAuth();
+    connectSenseWebSocket();
+    const retry = await fetch(url, { headers: { 'Authorization': `bearer ${senseToken}` } });
+    if (!retry.ok) throw new Error(`Sense API error: ${retry.status}`);
+    return retry.json();
+  }
+  if (!resp.ok) throw new Error(`Sense API error: ${resp.status}`);
+  return resp.json();
+}
+
+// GET /api/sense - Combined realtime + trends + devices
+app.get('/api/sense', async (req, res) => {
+  try {
+    await ensureSenseAuth();
+    if (!senseWs || senseWs.readyState !== WebSocket.OPEN) connectSenseWebSocket();
+
+    const devices = await senseFetch('/devices');
+    const today = new Date().toISOString().split('T')[0] + 'T00:00:00.000Z';
+    let trends = null;
+    try { trends = await senseFetch(`/history/trends?monitor_id=${senseMonitorId}&scale=DAY&start=${today}`); } catch (e) {}
+
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0,0,0,0);
+    let monthTrends = null;
+    try { monthTrends = await senseFetch(`/history/trends?monitor_id=${senseMonitorId}&scale=MONTH&start=${monthStart.toISOString()}`); } catch (e) {}
+
+    const rt = senseRealtime || {};
+    const rtAge = senseRealtimeTime ? Math.round((Date.now() - senseRealtimeTime) / 1000) : null;
+    const rtDevices = (rt.devices || []).map(d => ({ id: d.id, name: d.name, icon: d.icon, watts: d.w || 0 })).filter(d => d.watts > 0).sort((a, b) => b.watts - a.watts);
+
+    res.json({
+      success: true,
+      consumption: rt.w || 0,
+      solarProduction: rt.solar_w || 0,
+      netPower: (rt.w || 0) - (rt.solar_w || 0),
+      voltageL1: rt.voltage?.[0] || null,
+      voltageL2: rt.voltage?.[1] || null,
+      frequency: rt.hz || null,
+      realtimeAge: rtAge,
+      hasRealtime: !!senseRealtime,
+      todayUsage: trends?.consumption?.total || null,
+      todayProduction: trends?.production?.total || null,
+      todayToGrid: trends?.to_grid || null,
+      todayFromGrid: trends?.from_grid || null,
+      todaySolarPowered: trends?.solar_powered || null,
+      monthUsage: monthTrends?.consumption?.total || null,
+      monthProduction: monthTrends?.production?.total || null,
+      monthToGrid: monthTrends?.to_grid || null,
+      monthFromGrid: monthTrends?.from_grid || null,
+      activeDevices: rtDevices,
+      totalDevices: (devices || []).length,
+      totalActiveDevices: rtDevices.length,
+      monitorId: senseMonitorId,
+    });
+  } catch (err) {
+    console.error('Sense error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/sense/realtime', async (req, res) => {
+  if (!senseRealtime) return res.json({ success: false, error: 'No real-time data yet' });
+  res.json({ success: true, ...senseRealtime, age: Math.round((Date.now() - senseRealtimeTime) / 1000) });
+});
+
+app.get('/api/sense/devices', async (req, res) => {
+  try {
+    const devices = await senseFetch('/devices');
+    res.json({ success: true, devices });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get('/', (req, res) => {
-  res.json({ status: 'EG4 Proxy Server running', connected: isSessionValid(), serialNum: currentSerialNum });
+  res.json({ status: 'EG4 + Sense Proxy Server running', connected: isSessionValid(), serialNum: currentSerialNum, senseAuth: !!senseToken });
 });
 
 app.listen(PORT, () => {
-  console.log(`EG4 Proxy Server running on port ${PORT}`);
+  console.log(`EG4 + Sense Proxy Server running on port ${PORT}`);
 });
