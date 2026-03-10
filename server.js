@@ -13,6 +13,12 @@ let lastLoginTime = null;
 let currentSerialNum = null;
 const SESSION_TIMEOUT = 30 * 60 * 1000;
 
+// Default station to auto-select on startup/reconnect
+const DEFAULT_EG4_ACCOUNT = 'SOLARSPIKE';
+const DEFAULT_EG4_PASSWORD = 'Rockandroll101!';
+const DEFAULT_SERIAL_NUM = '52842P0279';
+const KEEPALIVE_INTERVAL = 25 * 60 * 1000; // Re-login every 25 min (before 30 min timeout)
+
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -714,6 +720,53 @@ app.get('/api/sense/devices', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// ===== EG4 AUTO-LOGIN & KEEPALIVE =====
+async function eg4AutoConnect() {
+  try {
+    console.log('[EG4] Auto-connecting...');
+    const formData = new URLSearchParams();
+    formData.append('account', DEFAULT_EG4_ACCOUNT);
+    formData.append('password', DEFAULT_EG4_PASSWORD);
+
+    const response = await fetch(`${EG4_BASE_URL}/web/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formData.toString(),
+      redirect: 'manual'
+    });
+
+    const cookies = extractCookies(response);
+    if (!cookies) {
+      console.error('[EG4] Auto-login failed — no cookies returned');
+      return false;
+    }
+
+    sessionCookie = cookies;
+    lastLoginTime = Date.now();
+    currentSerialNum = DEFAULT_SERIAL_NUM;
+    console.log(`[EG4] Auto-connected: session active, station=${currentSerialNum}`);
+    return true;
+  } catch (err) {
+    console.error('[EG4] Auto-connect error:', err.message);
+    return false;
+  }
+}
+
+// Auto-connect on startup
+eg4AutoConnect().then(ok => {
+  if (!ok) console.warn('[EG4] Startup auto-connect failed — will retry on keepalive');
+});
+
+// Keepalive: re-login before session expires
+setInterval(async () => {
+  try {
+    const ok = await eg4AutoConnect();
+    if (!ok) console.warn('[EG4] Keepalive re-login failed');
+  } catch (e) {
+    console.error('[EG4] Keepalive error:', e.message);
+  }
+}, KEEPALIVE_INTERVAL);
 
 app.get('/', (req, res) => {
   res.json({ status: 'EG4 + Sense Proxy Server running', connected: isSessionValid(), serialNum: currentSerialNum, senseAuth: !!senseToken });
